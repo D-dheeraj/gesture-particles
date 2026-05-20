@@ -25,8 +25,7 @@ An interactive 3D particle system using **Three.js** and **MediaPipe Hands** tha
    - PINCH ✌️
    - DOUBLE THUMBS UP ❤️
 
-## Project Preview
-(Add screenshot here)
+
 
 ## Author
 Dheeraj Kumar Singh
