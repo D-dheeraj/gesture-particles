@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaPipe Hand Gesture Particle System - Heart Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; }
+        canvas { display: block; }
+        #webcam-video { position: absolute; top: 0; left: 0; visibility: hidden; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: #ffffff;
+            font-family: monospace;
+            z-index: 10;
+            font-size: 18px;
+        }
+        #hand-indicator { 
+            position: absolute; 
+            width: 20px; 
+            height: 20px; 
+            border: 3px solid #00ffaa; 
+            border-radius: 50%; 
+            pointer-events: none; 
+            z-index: 11;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 10px #00ffaa;
+        }
+        #heart-indicator {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            background: url('image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ff1493"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>');
+            background-size: contain;
+            pointer-events: none;
+            z-index: 12;
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0);
+            transition: all 0.3s ease;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+</head>
+<body>
+    <div id="info">Waiting for webcam access... Try PINCH ✌️ or DOUBLE THUMBS UP ❤️</div>
+    <video id="webcam-video" playsinline></video>
+    <div id="hand-indicator"></div>
+    <div id="heart-indicator"></div>
+
+    <script>
+        // --- Configuration ---
+        const PARTICLE_COUNT = 50000;
+        const HAND_INFLUENCE_RADIUS = 0.5;
+        const REPULSION_STRENGTH = 0.005;
+        const HEART_TRANSITION_SPEED = 0.02;
+        let heartBeatTime = 0;
+        let isHeartMode = false;
+
+        // --- Global State ---
+        const handPosition = new THREE.Vector3(0, 0, 0);
+        let currentGesture = 'NONE'; 
+        let isHandDetected = false;
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 5;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Particle System Setup ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        const colors = new Float32Array(PARTICLE_COUNT * 3);
+        const initialPositions = new Float32Array(PARTICLE_COUNT * 3);
+        const heartTargetPositions = new Float32Array(PARTICLE_COUNT * 3); // NEW: Heart positions
+
+        function setSphereTemplate() {
+            const radius = 2;
+            const centerColor = new THREE.Color(0.2, 0.8, 1.0); 
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const r = Math.pow(Math.random(), 1/3) * radius; 
+                const angle1 = Math.random() * Math.PI * 2;
+                const angle2 = Math.random() * Math.PI;
+
+                const x = r * Math.sin(angle2) * Math.cos(angle1);
+                const y = r * Math.sin(angle2) * Math.sin(angle1);
+                const z = r * Math.cos(angle2);
+                
+                const i3 = i * 3;
+                
+                positions[i3 + 0] = initialPositions[i3 + 0] = x;
+                positions[i3 + 1] = initialPositions[i3 + 1] = y;
+                positions[i3 + 2] = initialPositions[i3 + 2] = z;
+
+                colors[i3 + 0] = centerColor.r;
+                colors[i3 + 1] = centerColor.g;
+                colors[i3 + 2] = centerColor.b;
+            }
+        }
+        
+        // NEW: Generate Heart Shape Target Positions
+        function generateHeartPositions() {
+            const heartScale = 1.8;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const t = (i / PARTICLE_COUNT) * Math.PI * 8;
+                const s = Math.sin(t);
+                const heartX = 16 * Math.pow(s, 3);
+                const heartY = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+                
+                // Distribute particles around heart curve
+                const radiusOffset = 0.1 + Math.sin(i * 0.1) * 0.05;
+                const angleOffset = (i % 100) / 100 * Math.PI * 2;
+                
+                const x = (heartX * radiusOffset * Math.cos(angleOffset)) * heartScale;
+                const y = (heartY * radiusOffset) * heartScale;
+                const z = (Math.sin(i * 0.05) * 0.3) * heartScale;
+                
+                const i3 = i * 3;
+                heartTargetPositions[i3 + 0] = x * 0.7;
+                heartTargetPositions[i3 + 1] = y * 0.7;
+                heartTargetPositions[i3 + 2] = z;
+            }
+        }
+        
+        setSphereTemplate();
+        generateHeartPositions(); // Generate heart positions once
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometry.setAttribute('initialPosition', new THREE.BufferAttribute(initialPositions, 3));
+        geometry.setAttribute('heartTargetPosition', new THREE.BufferAttribute(heartTargetPositions, 3));
+
+        const material = new THREE.PointsMaterial({
+            size: 0.05,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.9,
+            sizeAttenuation: true
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- Enhanced Particle Logic ---
+        function updateParticles() {
+            const posAttr = particles.geometry.attributes.position;
+            const colorAttr = particles.geometry.attributes.color;
+            const initPosAttr = particles.geometry.attributes.initialPosition;
+            const heartPosAttr = particles.geometry.attributes.heartTargetPosition;
+            
+            const posArray = posAttr.array;
+            const colorArray = colorAttr.array;
+            const initPosArray = initPosAttr.array;
+            const heartPosArray = heartPosAttr.array;
+            
+            const tempPos = new THREE.Vector3(); 
+            
+            // Heart beat pulsing effect
+            heartBeatTime += 0.1;
+            const heartPulse = isHeartMode ? (Math.sin(heartBeatTime * 3) * 0.1 + 1.0) : 1.0;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const i3 = i * 3;
+                tempPos.set(posArray[i3], posArray[i3 + 1], posArray[i3 + 2]);
+                
+                if (isHandDetected && currentGesture !== 'HEART') {
+                    const distance = tempPos.distanceTo(handPosition);
+                    
+                    if (distance < HAND_INFLUENCE_RADIUS) {
+                        let actualStrength = REPULSION_STRENGTH;
+                        let targetColor = {r: 1.0, g: 0.5, b: 0.0};
+                        
+                        if (currentGesture === 'PINCH') {
+                            actualStrength *= 4.0;
+                            targetColor = {r: 0.0, g: 1.0, b: 0.0};
+                        }
+                        
+                        const repulsionVector = tempPos.clone().sub(handPosition);
+                        repulsionVector.normalize();
+                        const strength = actualStrength * (1 - distance / HAND_INFLUENCE_RADIUS);
+                        
+                        posArray[i3 + 0] += repulsionVector.x * strength;
+                        posArray[i3 + 1] += repulsionVector.y * strength;
+                        posArray[i3 + 2] += repulsionVector.z * strength;
+                        
+                        const influence = 1 - distance / HAND_INFLUENCE_RADIUS;
+                        const decayFactor = 0.9;
+                        colorArray[i3 + 0] = colorArray[i3 + 0] * decayFactor + targetColor.r * influence * 0.1;
+                        colorArray[i3 + 1] = colorArray[i3 + 1] * decayFactor + targetColor.g * influence * 0.1;
+                        colorArray[i3 + 2] = colorArray[i3 + 2] * decayFactor + targetColor.b * influence * 0.1;
+                    } else {
+                        const decayFactor = 0.98;
+                        posArray[i3 + 0] = posArray[i3 + 0] * decayFactor + initPosArray[i3 + 0] * 0.02;
+                        posArray[i3 + 1] = posArray[i3 + 1] * decayFactor + initPosArray[i3 + 1] * 0.02;
+                        posArray[i3 + 2] = posArray[i3 + 2] * decayFactor + initPosArray[i3 + 2] * 0.02;
+                    }
+                }
+                
+                // Heart mode transition
+                const heartLerp = isHeartMode ? HEART_TRANSITION_SPEED : HEART_TRANSITION_SPEED * 0.5;
+                const targetPosArray = isHeartMode ? heartPosArray : initPosArray;
+                
+                posArray[i3 + 0] = posArray[i3 + 0] * (1 - heartLerp) + targetPosArray[i3 + 0] * heartLerp * heartPulse;
+                posArray[i3 + 1] = posArray[i3 + 1] * (1 - heartLerp) + targetPosArray[i3 + 1] * heartLerp * heartPulse;
+                posArray[i3 + 2] = posArray[i3 + 2] * (1 - heartLerp) + targetPosArray[i3 + 2] * heartLerp;
+                
+                // Heart color effects (Pink/Red gradient)
+                if (isHeartMode) {
+                    const heartInfluence = Math.sin(heartBeatTime * 3 + i * 0.01) * 0.2 + 0.8;
+                    colorArray[i3 + 0] *= 0.98;
+                    colorArray[i3 + 1] *= 0.95;
+                    colorArray[i3 + 2] = 0.2 + heartInfluence * 0.3;
+                    colorArray[i3 + 0] += 0.02 * heartInfluence; // Pinkish glow
+                } else {
+                    colorArray[i3 + 0] *= 0.99;
+                    colorArray[i3 + 1] *= 0.99;
+                    colorArray[i3 + 2] *= 0.99;
+                }
+            }
+            
+            posAttr.needsUpdate = true;
+            colorAttr.needsUpdate = true;
+        }
+
+        // --- MediaPipe Hands Integration ---
+        const videoElement = document.getElementById('webcam-video');
+        const infoElement = document.getElementById('info');
+        const handIndicator = document.getElementById('hand-indicator');
+        const heartIndicator = document.getElementById('heart-indicator');
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 2, // Increased to detect both hands for heart gesture
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        function mapLandmarkTo3D(landmark) {
+            const x_norm = landmark.x * 2 - 1;
+            const y_norm = -(landmark.y * 2 - 1); 
+            handPosition.set(x_norm, y_norm, 0.5);
+            handPosition.unproject(camera);
+        }
+
+        // ENHANCED: Multiple Gesture Detection
+        function detectGesture(landmarksArray) {
+            if (landmarksArray.length === 0) return 'NONE';
+            
+            // Single hand pinch detection
+            if (landmarksArray.length === 1) {
+                const landmarks = landmarksArray[0];
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                const distance = Math.sqrt(
+                    Math.pow(indexTip.x - thumbTip.x, 2) + 
+                    Math.pow(indexTip.y - thumbTip.y, 2) + 
+                    Math.pow(indexTip.z - thumbTip.z, 2)
+                );
+                return distance < 0.05 ? 'PINCH' : 'OPEN';
+            }
+            
+            // Two hands - Check for DOUBLE THUMBS UP (Heart gesture!)
+            if (landmarksArray.length === 2) {
+                const leftHand = landmarksArray[0];
+                const rightHand = landmarksArray[1];
+                
+                // Check if both thumbs are up (thumb tip above other fingertips)
+                const leftThumbUp = leftHand[4].y < leftHand[8].y && leftHand[4].y < leftHand[12].y;
+                const rightThumbUp = rightHand[4].y < rightHand[8].y && rightHand[4].y < rightHand[12].y;
+                
+                if (leftThumbUp && rightThumbUp) {
+                    return 'HEART'; // Double thumbs up detected!
+                }
+            }
+            
+            return 'OPEN';
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandDetected = true;
+                const landmarksArray = results.multiHandLandmarks;
+                
+                // Use average position of detected hands or primary hand
+                const primaryLandmark = landmarksArray[0][8]; // Index finger tip
+                mapLandmarkTo3D(primaryLandmark);
+                
+                currentGesture = detectGesture(landmarksArray);
+                isHeartMode = currentGesture === 'HEART';
+                
+                // Update UI
+                const gestureText = currentGesture === 'HEART' ? '❤️ DOUBLE THUMBS UP!' : 
+                                  currentGesture === 'PINCH' ? '✌️ PINCH (Strong Push!)' : '✋ Open Hand';
+                infoElement.innerText = `Gesture: ${gestureText}`;
+                
+                handIndicator.style.display = 'block';
+                handIndicator.style.left = `${primaryLandmark.x * window.innerWidth}px`;
+                handIndicator.style.top = `${primaryLandmark.y * window.innerHeight}px`;
+                
+                // Heart indicator animation
+                if (currentGesture === 'HEART') {
+                    heartIndicator.style.opacity = '1';
+                    heartIndicator.style.transform = `translate(-50%, -50%) scale(${1 + Math.sin(heartBeatTime * 3) * 0.3})`;
+                    heartIndicator.style.left = `${primaryLandmark.x * window.innerWidth}px`;
+                    heartIndicator.style.top = `${primaryLandmark.y * window.innerHeight}px`;
+                } else {
+                    heartIndicator.style.opacity = '0';
+                    heartIndicator.style.transform = 'translate(-50%, -50%) scale(0)';
+                }
+            } else {
+                isHandDetected = false;
+                currentGesture = 'NONE';
+                isHeartMode = false;
+                infoElement.innerText = "Searching for hand... Try PINCH ✌️ or DOUBLE THUMBS UP ❤️";
+                handIndicator.style.display = 'none';
+                heartIndicator.style.opacity = '0';
+            }
+        }
+        
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        
+        cameraFeed.start();
+        
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            updateParticles(); 
+            particles.rotation.y += isHeartMode ? 0.005 : 0.001; // Faster rotation in heart mode
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
